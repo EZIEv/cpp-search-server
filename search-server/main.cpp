@@ -60,7 +60,7 @@ public:
 
     void AddDocument(int document_id, const string& document) {
         vector<string> document_words = SplitIntoWordsNoStop(document);
-		double word_tf = 1.0 / document_words.size();
+        double word_tf = 1.0 / document_words.size();
         for (const string& word : document_words) {
             documents_[word][document_id] += word_tf;
         }
