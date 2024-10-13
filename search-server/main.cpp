@@ -60,11 +60,11 @@ public:
 
     void AddDocument(int document_id, const string& document) {
         vector<string> document_words = SplitIntoWordsNoStop(document);
+        double word_tf = 1.0 / document_words.size();
         for (const string& word : document_words) {
-            documents_[word].insert(document_id);
-            documents_tf_[document_id][word] += 1.0 / document_words.size();
+            documents_[word][document_id] += word_tf;
         }
-        document_count_ += 1;
+        ++document_count_;
     }
 
     vector<Document> FindTopDocuments(const string& raw_query) const {
@@ -89,9 +89,8 @@ private:
         set<string> minus_words;
     };
 
-    map<string, set<int>> documents_;
+    map<string, map<int, double>> documents_;
     int document_count_ = 0;
-    map<int, map<string, double>> documents_tf_;
     set<string> stop_words_;
 
     bool IsStopWord(const string& word) const {
@@ -127,18 +126,18 @@ private:
         vector<Document> matched_documents_vector;
         map<int, double> matched_documents;
 
-        for (const auto& [word, documents_id] : documents_) {
+        for (const auto& [word, documents_id_tf] : documents_) {
             if (query_words.plus_words.contains(word)) {
                 double word_idf = log(static_cast<double>(document_count_) / documents_.at(word).size());
-                for (int document_id : documents_id) {
-                    matched_documents[document_id] += word_idf * documents_tf_.at(document_id).at(word);
+                for (const auto& [document_id, word_tf] : documents_id_tf) {
+                    matched_documents[document_id] += word_idf * word_tf;
                 }
             }
         }
 
         for (const string& minus_word : query_words.minus_words) {
             if (documents_.contains(minus_word)) {
-                for (int document_id : documents_.at(minus_word)) {
+                for (const auto& [document_id, word_tf] : documents_.at(minus_word)) {
                     if (matched_documents.contains(document_id)) {
                         matched_documents.erase(document_id);
                     }
