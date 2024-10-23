@@ -1,11 +1,13 @@
 #include <algorithm>
+#include <cmath>
 #include <iostream>
-#include <set>
 #include <map>
+#include <numeric>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
-#include <cmath>
+
 
 using namespace std;
 
@@ -22,6 +24,19 @@ int ReadLineWithNumber() {
     cin >> result;
     ReadLine();
     return result;
+}
+
+vector<int> ReadNumbersSplitedWithSpace() {
+    vector<int> numbers;
+    int n = 0;
+    cin >> n;
+    for (int i = 0; i < n; ++i) {
+        int k;
+        cin >> k;
+        numbers.push_back(k);
+    }
+    ReadLine();
+    return numbers;
 }
 
 vector<string> SplitIntoWords(const string& text) {
@@ -48,6 +63,7 @@ vector<string> SplitIntoWords(const string& text) {
 struct Document {
     int id;
     double relevance;
+    int rating;
 };
 
 class SearchServer {
@@ -58,9 +74,10 @@ public:
         }
     }
 
-    void AddDocument(int document_id, const string& document) {
+    void AddDocument(int document_id, const string& document, const vector<int>& ratings) {
         vector<string> document_words = SplitIntoWordsNoStop(document);
         double word_tf = 1.0 / document_words.size();
+        documents_ratings_[document_id] = ComputeAverageRating(ratings);
         for (const string& word : document_words) {
             documents_[word][document_id] += word_tf;
         }
@@ -90,6 +107,7 @@ private:
     };
 
     map<string, map<int, double>> documents_;
+    map<int, int> documents_ratings_;
     int document_count_ = 0;
     set<string> stop_words_;
 
@@ -147,10 +165,17 @@ private:
         }
 
         for (const auto& [document_id, relevance] : matched_documents) {
-            matched_documents_vector.push_back(Document{ document_id, relevance });
+            matched_documents_vector.push_back(Document{ document_id, relevance, documents_ratings_.at(document_id) });
         }
 
         return matched_documents_vector;
+    }
+
+    static int ComputeAverageRating(const vector<int>& ratings) {
+        if (ratings.size() == 0) {
+            return 0;
+        }
+        return accumulate(ratings.begin(), ratings.end(), 0) / static_cast<int>(ratings.size());
     }
 };
 
@@ -160,7 +185,9 @@ SearchServer CreateSearchServer() {
 
     const int document_count = ReadLineWithNumber();
     for (int document_id = 0; document_id < document_count; ++document_id) {
-        search_server.AddDocument(document_id, ReadLine());
+        string document = ReadLine();
+        vector<int> ratings = ReadNumbersSplitedWithSpace();
+        search_server.AddDocument(document_id, document, ratings);
     }
 
     return search_server;
@@ -171,8 +198,9 @@ int main() {
 
     const string query = ReadLine();
 
-    for (const auto& [document_id, relevance] : search_server.FindTopDocuments(query)) {
-        cout << "{ document_id = "s << document_id << ", "
-            << "relevance = "s << relevance << " }"s << endl;
+    for (const auto& [document_id, relevance, rating] : search_server.FindTopDocuments(query)) {
+        cout << "{ document_id = "s << document_id << ", "s
+            << "relevance = "s << relevance << ", "s
+            << "rating = "s << rating << " }"s << endl;
     }
 }
