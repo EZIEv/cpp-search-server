@@ -60,6 +60,13 @@ vector<string> SplitIntoWords(const string& text) {
     return words;
 }
 
+enum class DocumentStatus {
+    ACTUAL,
+    IRRELEVANT,
+    BANNED,
+    REMOVED
+};
+
 struct Document {
     int id;
     double relevance;
@@ -74,19 +81,20 @@ public:
         }
     }
 
-    void AddDocument(int document_id, const string& document, const vector<int>& ratings) {
+    void AddDocument(int document_id, const string& document, DocumentStatus status, const vector<int>& ratings) {
         vector<string> document_words = SplitIntoWordsNoStop(document);
         double word_tf = 1.0 / document_words.size();
         documents_ratings_[document_id] = ComputeAverageRating(ratings);
+        documents_statuses_[document_id] = status;
         for (const string& word : document_words) {
             documents_[word][document_id] += word_tf;
         }
         ++document_count_;
     }
 
-    vector<Document> FindTopDocuments(const string& raw_query) const {
+    vector<Document> FindTopDocuments(const string& raw_query, DocumentStatus status = DocumentStatus::ACTUAL) const {
         const QueryWords query_words = ParseQuery(raw_query);
-        auto matched_documents = FindAllDocuments(query_words);
+        auto matched_documents = FindAllDocuments(query_words, status);
 
         sort(matched_documents.begin(), matched_documents.end(),
             [](const Document& lhs, const Document& rhs) {
@@ -108,6 +116,7 @@ private:
 
     map<string, map<int, double>> documents_;
     map<int, int> documents_ratings_;
+    map<int, DocumentStatus> documents_statuses_; 
     int document_count_ = 0;
     set<string> stop_words_;
 
@@ -140,7 +149,7 @@ private:
         return query_words;
     }
 
-    vector<Document> FindAllDocuments(const QueryWords& query_words) const {
+    vector<Document> FindAllDocuments(const QueryWords& query_words, DocumentStatus status) const {
         vector<Document> matched_documents_vector;
         map<int, double> matched_documents;
 
@@ -148,7 +157,9 @@ private:
             if (query_words.plus_words.contains(word)) {
                 double word_idf = log(static_cast<double>(document_count_) / documents_.at(word).size());
                 for (const auto& [document_id, word_tf] : documents_id_tf) {
-                    matched_documents[document_id] += word_idf * word_tf;
+                    if (documents_statuses_.at(document_id) == status) {
+                        matched_documents[document_id] += word_idf * word_tf;
+                    }
                 }
             }
         }
@@ -179,7 +190,7 @@ private:
     }
 };
 
-SearchServer CreateSearchServer() {
+/*SearchServer CreateSearchServer() {
     SearchServer search_server;
     search_server.SetStopWords(ReadLine());
 
@@ -202,5 +213,30 @@ int main() {
         cout << "{ document_id = "s << document_id << ", "s
             << "relevance = "s << relevance << ", "s
             << "rating = "s << rating << " }"s << endl;
+    }
+}
+*/
+
+void PrintDocument(const Document& document) {
+    cout << "{ "s
+         << "document_id = "s << document.id << ", "s
+         << "relevance = "s << document.relevance << ", "s
+         << "rating = "s << document.rating
+         << " }"s << endl;
+}
+int main() {
+    SearchServer search_server;
+    search_server.SetStopWords("и в на"s);
+    search_server.AddDocument(0, "белый кот и модный ошейник"s,        DocumentStatus::ACTUAL, {8, -3});
+    search_server.AddDocument(1, "пушистый кот пушистый хвост"s,       DocumentStatus::ACTUAL, {7, 2, 7});
+    search_server.AddDocument(2, "ухоженный пёс выразительные глаза"s, DocumentStatus::ACTUAL, {5, -12, 2, 1});
+    search_server.AddDocument(3, "ухоженный скворец евгений"s,         DocumentStatus::BANNED, {9});
+    cout << "ACTUAL:"s << endl;
+    for (const Document& document : search_server.FindTopDocuments("пушистый ухоженный кот"s)) {
+        PrintDocument(document);
+    }
+    cout << "BANNED:"s << endl;
+    for (const Document& document : search_server.FindTopDocuments("пушистый ухоженный кот"s, DocumentStatus::BANNED)) {
+        PrintDocument(document);
     }
 }
