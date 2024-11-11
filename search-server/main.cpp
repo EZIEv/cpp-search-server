@@ -75,6 +75,9 @@ class SearchServer {
 public:
     explicit SearchServer(const string& text) {
         for (const string& word : SplitIntoWords(text)) {
+            if (!IsWordCorrect(word)) {
+                throw invalid_argument("Stop words are incorrect"s);
+            }
             stop_words_.insert(word);
         }
     }
@@ -82,11 +85,18 @@ public:
     template <typename StringCollection>
     explicit SearchServer(const StringCollection& word_collection) {
         for (const string& word : word_collection) {
+            if (!IsWordCorrect(word)) {
+                throw invalid_argument("Stop words are incorrect"s);
+            }
             stop_words_.insert(word);
         }
     }
 
     void AddDocument(int document_id, const string& document, DocumentStatus status, const vector<int>& ratings) {
+        if (document_id < 0 || documents_statuses_.contains(document_id) || !IsValidQuery(document)) {
+            throw invalid_argument("Document ID or document content are incorrect"s);
+        }
+
         vector<string> document_words = SplitIntoWordsNoStop(document);
         double word_tf = 1.0 / document_words.size();
         documents_ratings_[document_id] = ComputeAverageRating(ratings);
@@ -94,15 +104,22 @@ public:
         for (const string& word : document_words) {
             documents_[word][document_id] += word_tf;
         }
+        document_ids_.push_back(document_id);
         ++document_count_;
+
+        return;
     }
 
     template <typename PredicateFunc>
     vector<Document> FindTopDocuments(const string& raw_query, PredicateFunc predicate_func) const {
-        const QueryWords query_words = ParseQuery(raw_query);
-        auto matched_documents = FindAllDocuments(query_words, predicate_func);
+        if (!IsValidQuery(raw_query)) {
+            throw invalid_argument("Query is incorrect"s);
+        }
 
-        sort(matched_documents.begin(), matched_documents.end(),
+        const QueryWords query_words = ParseQuery(raw_query);
+        vector<Document> result = FindAllDocuments(query_words, predicate_func);
+
+        sort(result.begin(), result.end(),
             [](const Document& lhs, const Document& rhs) {
                 if (abs(lhs.relevance - rhs.relevance) < EPSILON) {
                     return lhs.rating > rhs.rating;
@@ -111,28 +128,34 @@ public:
                 }
             });
 
-        if (matched_documents.size() > MAX_RESULT_DOCUMENT_COUNT) {
-            matched_documents.resize(MAX_RESULT_DOCUMENT_COUNT);
+        if (result.size() > MAX_RESULT_DOCUMENT_COUNT) {
+            result.resize(MAX_RESULT_DOCUMENT_COUNT);
         }
 
-        return matched_documents;
+        return result;
     }
 
-    vector<Document> FindTopDocuments(const string& raw_query, DocumentStatus status = DocumentStatus::ACTUAL) const {
+    vector<Document> FindTopDocuments(const string& raw_query, DocumentStatus status) const {
         return FindTopDocuments(raw_query, [status](int document_id, DocumentStatus document_status, int rating) { return document_status == status; });
     }
 
-    int GetDocumentCount() const {
-        return document_count_;
+    vector<Document> FindTopDocuments(const string& raw_query) const {
+        return FindTopDocuments(raw_query, [](int document_id, DocumentStatus document_status, int rating) { return document_status == DocumentStatus::ACTUAL; });
     }
 
     tuple<vector<string>, DocumentStatus> MatchDocument(const string& raw_query, int document_id) const {
+        if (!IsValidQuery(raw_query)) {
+            throw invalid_argument("Query is incorrect"s);
+        }
+
         vector<string> plus_words;
         QueryWords query_words = ParseQuery(raw_query);
+        tuple<vector<string>, DocumentStatus> result;
 
         for (const string& word : query_words.minus_words) {
             if (documents_.contains(word) && documents_.at(word).contains(document_id)) {
-                return tuple(plus_words, documents_statuses_.at(document_id));
+                result =  tuple(plus_words, documents_statuses_.at(document_id));
+                return result;
             }
         }
 
@@ -143,7 +166,20 @@ public:
         }
 
         sort(plus_words.begin(), plus_words.end());
-        return tuple(plus_words, documents_statuses_.at(document_id));
+        result = tuple(plus_words, documents_statuses_.at(document_id));
+        return result;
+    }
+
+    int GetDocumentId(int index) const {
+        if (index < 0 || index >= static_cast<int>(document_ids_.size())) {
+            throw out_of_range("ID of document is incorrrect"s);
+        }
+
+        return document_ids_.at(index);
+    }
+
+    int GetDocumentCount() const {
+        return document_count_;
     }
 
 private:
@@ -157,6 +193,35 @@ private:
     map<int, DocumentStatus> documents_statuses_; 
     int document_count_ = 0;
     set<string> stop_words_;
+    vector<int> document_ids_;
+
+    static bool IsWordCorrect(const string& word) {
+        for (const char c : word) {
+            if (c >= '\0' && c < ' ') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static bool IsValidQuery(const string& query) {
+        istringstream query_stream(query);
+        
+        string word;
+        while (query_stream >> word) {
+            if (word.size() == 1 && word[0] == '-') {
+                return false;
+            }
+            if (word[0] == '-' && word[1] == '-') {
+                return false;
+            }
+            if (!IsWordCorrect(word)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     bool IsStopWord(const string& word) const {
         return stop_words_.count(word) > 0;
@@ -228,14 +293,6 @@ private:
     }
 };
 
-void PrintDocument(const Document& document) {
-    cout << "{ "s
-         << "document_id = "s << document.id << ", "s
-         << "relevance = "s << document.relevance << ", "s
-         << "rating = "s << document.rating
-         << " }"s << endl;
-}
-
 template <typename T, typename U>
 void AssertEqualImpl(const T& t, const U& u, const string& t_str, const string& u_str, const string& file,
                      const string& func, unsigned line, const string& hint) {
@@ -292,13 +349,15 @@ void TestAddDocument() {
         SearchServer server(""s);
         ASSERT_EQUAL(server.GetDocumentCount(), 0);
         server.AddDocument(doc0_id, content0, DocumentStatus::ACTUAL, ratings0);
-        const auto found_docs0 = server.FindTopDocuments("dogs"s);
+        vector<Document> found_docs0;
+        found_docs0 = server.FindTopDocuments("dogs"s);
         ASSERT_EQUAL(found_docs0.size(), 1u);
         const Document& doc0 = found_docs0[0];
         ASSERT_EQUAL(doc0.id, doc0_id);
         ASSERT_EQUAL(server.GetDocumentCount(), 1);
         server.AddDocument(doc1_id, content1, DocumentStatus::ACTUAL, ratings1);
-        const auto found_docs1 = server.FindTopDocuments("bus"s);
+        vector<Document> found_docs1;
+        found_docs1 = server.FindTopDocuments("bus"s);
         ASSERT_EQUAL(found_docs1.size(), 1u);
         const Document& doc1 = found_docs1[0];
         ASSERT_EQUAL(doc1.id, doc1_id);
@@ -313,7 +372,8 @@ void TestExcludeStopWordsFromAddedDocumentContent() {
     {
         SearchServer server(""s);
         server.AddDocument(doc_id, content, DocumentStatus::ACTUAL, ratings);
-        const auto found_docs = server.FindTopDocuments("in"s);
+        vector<Document> found_docs;
+        found_docs = server.FindTopDocuments("in"s);
         ASSERT_EQUAL(found_docs.size(), 1u);
         const Document& doc0 = found_docs[0];
         ASSERT_EQUAL(doc0.id, doc_id);
@@ -322,21 +382,27 @@ void TestExcludeStopWordsFromAddedDocumentContent() {
     {
         SearchServer server("in the"s);
         server.AddDocument(doc_id, content, DocumentStatus::ACTUAL, ratings);
-        ASSERT_HINT(server.FindTopDocuments("in"s).empty(),
+        vector<Document> result;
+        result = server.FindTopDocuments("in"s);
+        ASSERT_HINT(result.empty(),
                     "Stop words must be excluded from documents"s);
     }
 
     {
         SearchServer server(vector<string> {"in"s, "the"s} );
         server.AddDocument(doc_id, content, DocumentStatus::ACTUAL, ratings);
-        ASSERT_HINT(server.FindTopDocuments("in"s).empty(),
+        vector<Document> result;
+        result = server.FindTopDocuments("in"s);
+        ASSERT_HINT(result.empty(),
                     "Stop words must be excluded from documents"s);
     }
 
     {
         SearchServer server(set<string> {"in"s, "the"s} );
         server.AddDocument(doc_id, content, DocumentStatus::ACTUAL, ratings);
-        ASSERT_HINT(server.FindTopDocuments("in"s).empty(),
+        vector<Document> result;
+        result = server.FindTopDocuments("in"s);
+        ASSERT_HINT(result.empty(),
                     "Stop words must be excluded from documents"s);
     }
 }
@@ -348,16 +414,22 @@ void TestConsideringMinusWordsInQuery() {
     {
         SearchServer server(""s);
         server.AddDocument(doc_id, content, DocumentStatus::ACTUAL, ratings);
-        ASSERT_EQUAL(server.FindTopDocuments("cat in"s).size(), 1u);
-        ASSERT_HINT(server.FindTopDocuments("cat -in"s).empty(),
+        vector<Document> result;
+        result = server.FindTopDocuments("cat in"s);
+        ASSERT_EQUAL(result.size(), 1u);
+        result = server.FindTopDocuments("cat -in"s);
+        ASSERT_HINT(result.empty(),
                     "Minus words must be considered in the query"s);
     }
 
     {
         SearchServer server("in the"s);
         server.AddDocument(doc_id, content, DocumentStatus::ACTUAL, ratings);
-        ASSERT_EQUAL(server.FindTopDocuments("cat in"s).size(), 1u);
-        ASSERT_HINT(!server.FindTopDocuments("cat -in"s).empty(),
+        vector<Document> result;
+        result = server.FindTopDocuments("cat in"s);
+        ASSERT_EQUAL(result.size(), 1u);
+        result = server.FindTopDocuments("cat -in"s);
+        ASSERT_HINT(!result.empty(),
                     "Minus words must not affect on stop words"s);
     }
 }
@@ -369,18 +441,27 @@ void TestDocumentsMatchingSearchRequest() {
     {
         SearchServer server(""s);
         server.AddDocument(doc_id, content, DocumentStatus::ACTUAL, ratings);
-        ASSERT(server.MatchDocument("cat in the city"s, 1) == tuple(vector<string> {"cat"s, "city"s, "in"s, "the"s}, DocumentStatus::ACTUAL));
-        ASSERT(server.MatchDocument("cat the city"s, 1) == tuple(vector<string> {"cat"s, "city"s, "the"s}, DocumentStatus::ACTUAL));
-        ASSERT(server.MatchDocument("cat -in the city"s, 1) == tuple(vector<string> {}, DocumentStatus::ACTUAL));
+        tuple<vector<string>, DocumentStatus> result;
+        result = server.MatchDocument("cat in the city"s, 1);
+        ASSERT(result == tuple(vector<string> {"cat"s, "city"s, "in"s, "the"s}, DocumentStatus::ACTUAL));
+        result = server.MatchDocument("cat the city"s, 1);
+        ASSERT(result == tuple(vector<string> {"cat"s, "city"s, "the"s}, DocumentStatus::ACTUAL));
+        result = server.MatchDocument("cat -in the city"s, 1);
+        ASSERT(result == tuple(vector<string> {}, DocumentStatus::ACTUAL));
     }
 
     {
         SearchServer server("in the"s);
         server.AddDocument(doc_id, content, DocumentStatus::BANNED, ratings);
-        ASSERT(server.MatchDocument("cat in the city"s, 1) == tuple(vector<string> {"cat"s, "city"s}, DocumentStatus::BANNED));
-        ASSERT(server.MatchDocument("cat the"s, 1) == tuple(vector<string> {"cat"s}, DocumentStatus::BANNED));
-        ASSERT(server.MatchDocument("cat -in the city"s, 1) == tuple(vector<string> {"cat"s, "city"s}, DocumentStatus::BANNED));
-        ASSERT(server.MatchDocument("cat -in the -city"s, 1) == tuple(vector<string> {}, DocumentStatus::BANNED));
+        tuple<vector<string>, DocumentStatus> result;
+        result = server.MatchDocument("cat in the city"s, 1);
+        ASSERT(result == tuple(vector<string> {"cat"s, "city"s}, DocumentStatus::BANNED));
+        result = server.MatchDocument("cat the"s, 1);
+        ASSERT(result == tuple(vector<string> {"cat"s}, DocumentStatus::BANNED));
+        result = server.MatchDocument("cat -in the city"s, 1);
+        ASSERT(result == tuple(vector<string> {"cat"s, "city"s}, DocumentStatus::BANNED));
+        result = server.MatchDocument("cat -in the -city"s, 1);
+        ASSERT(result == tuple(vector<string> {}, DocumentStatus::BANNED));
     }
 }
 
@@ -407,7 +488,8 @@ void TestSortFindDocumentsByRelevance() {
         server.AddDocument(doc_id2, content2, DocumentStatus::ACTUAL, ratings2);
         server.AddDocument(doc_id3, content3, DocumentStatus::ACTUAL, ratings3);
         server.AddDocument(doc_id4, content4, DocumentStatus::ACTUAL, ratings4);
-        const auto find_docs = server.FindTopDocuments("the cat help with new bus find"s);
+        vector<Document> find_docs;
+        find_docs = server.FindTopDocuments("the cat help with new bus find"s);
         ASSERT_HINT(find_docs[0].id == 3 && find_docs[1].id == 5 && find_docs[2].id == 4 &&
                     find_docs[3].id == 1, 
                     "Documents without accounting stop words are sorted by non-decreasing relevance"s);
@@ -420,7 +502,8 @@ void TestSortFindDocumentsByRelevance() {
         server.AddDocument(doc_id2, content2, DocumentStatus::ACTUAL, ratings2);
         server.AddDocument(doc_id3, content3, DocumentStatus::ACTUAL, ratings3);
         server.AddDocument(doc_id4, content4, DocumentStatus::ACTUAL, ratings4);
-        const auto find_docs = server.FindTopDocuments("the cat help with new bus find"s);
+        vector<Document> find_docs;
+        find_docs = server.FindTopDocuments("the cat help with new bus find"s);
         ASSERT_HINT(find_docs[0].id == 3 && find_docs[1].id == 1 && find_docs[2].id == 4 &&
                     find_docs[3].id == 5, 
                     "Documents with accounting stop words are sorted by non-decreasing relevance"s);
@@ -450,7 +533,8 @@ void TestComputationOfDocumentsRating() {
         server.AddDocument(doc_id2, content2, DocumentStatus::ACTUAL, ratings2);
         server.AddDocument(doc_id3, content3, DocumentStatus::ACTUAL, ratings3);
         server.AddDocument(doc_id4, content4, DocumentStatus::ACTUAL, ratings4);
-        const auto find_docs = server.FindTopDocuments("the cat help with new bus find not dogs"s);
+        vector<Document> find_docs;
+        find_docs = server.FindTopDocuments("the cat help with new bus find not dogs"s);
         ASSERT_EQUAL(find_docs[0].rating, (5 + 6 + 15) / 3);
         ASSERT_EQUAL(find_docs[1].rating, 0);
         ASSERT_EQUAL(find_docs[2].rating, (-1 + 2) / 3);
@@ -487,33 +571,39 @@ void TestFilterDocumentsByPredicateFunc() {
         server.AddDocument(doc_id2, content2, status_by_id[doc_id2], ratings2);
         server.AddDocument(doc_id3, content3, status_by_id[doc_id3], ratings3);
         server.AddDocument(doc_id4, content4, status_by_id[doc_id4], ratings4);
-        const auto find_docs0 = server.FindTopDocuments("the cat help with new bus find not dogs"s, 
-                                                       [](int document_id, DocumentStatus status, int rating) { return document_id % 2 == 0; });
+        vector<Document> find_docs0;
+        find_docs0 = server.FindTopDocuments("the cat help with new bus find not dogs"s,
+                                            [](int document_id, DocumentStatus status, int rating) { return document_id % 2 == 0; });
         for (const auto& doc : find_docs0) {
             ASSERT_HINT(doc.id % 2 == 0, "Find documents must have even ids"s);
         }
-        const auto find_docs1 = server.FindTopDocuments("the cat help with new bus find not dogs"s, 
-                                                       [](int document_id, DocumentStatus status, int rating) { return rating > 0; });
+        vector<Document> find_docs1;
+        find_docs1 = server.FindTopDocuments("the cat help with new bus find not dogs"s,
+                                            [](int document_id, DocumentStatus status, int rating) { return rating > 0; });
         for (const auto& doc : find_docs1) {
             ASSERT_HINT(doc.rating > 0, "Find documents must have positive ratings"s);
         }
-        const auto find_docs2 = server.FindTopDocuments("the cat help with new bus find not dogs"s, 
-                                                       [](int document_id, DocumentStatus status, int rating) { return rating == 0; });
+        vector<Document> find_docs2;
+        find_docs2 = server.FindTopDocuments("the cat help with new bus find not dogs"s,
+                                            [](int document_id, DocumentStatus status, int rating) { return rating == 0; });
         for (const auto& doc : find_docs2) {
             ASSERT_HINT(doc.rating == 0, "Find documents must have zero ratings"s);
         }
-        const auto find_docs3 = server.FindTopDocuments("the cat help with new bus find not dogs"s, 
-                                                       [](int document_id, DocumentStatus status, int rating) { return status == DocumentStatus::ACTUAL; });
+        vector<Document> find_docs3;
+        find_docs3 = server.FindTopDocuments("the cat help with new bus find not dogs"s,
+                                        [](int document_id, DocumentStatus status, int rating) { return status == DocumentStatus::ACTUAL; });
         for (const auto& doc : find_docs3) {
             ASSERT_HINT(status_by_id[doc.id] == DocumentStatus::ACTUAL, "Find documents must have actual statuses"s);
         }
-        const auto find_docs4 = server.FindTopDocuments("the cat help with new bus find not dogs"s, 
-                                                       [](int document_id, DocumentStatus status, int rating) { return status == DocumentStatus::BANNED; });
+        vector<Document> find_docs4;
+        find_docs4 = server.FindTopDocuments("the cat help with new bus find not dogs"s,
+                                            [](int document_id, DocumentStatus status, int rating) { return status == DocumentStatus::BANNED; });
         for (const auto& doc : find_docs4) {
             ASSERT_HINT(status_by_id[doc.id] == DocumentStatus::BANNED, "Find documents must have actual statuses"s);
         }
-        const auto find_docs5 = server.FindTopDocuments("the cat help with new bus find not dogs"s, 
-                                                       [](int document_id, DocumentStatus status, int rating) { return status == DocumentStatus::IRRELEVANT; });
+        vector<Document> find_docs5;
+        find_docs5 = server.FindTopDocuments("the cat help with new bus find not dogs"s,
+                                            [](int document_id, DocumentStatus status, int rating) { return status == DocumentStatus::IRRELEVANT; });
         ASSERT_HINT(find_docs5.empty(), "Find documents must have irrelevant statuses"s);
     }
 
@@ -524,11 +614,13 @@ void TestFilterDocumentsByPredicateFunc() {
         server.AddDocument(doc_id2, content2, status_by_id[doc_id2], ratings2);
         server.AddDocument(doc_id3, content3, status_by_id[doc_id3], ratings3);
         server.AddDocument(doc_id4, content4, status_by_id[doc_id4], ratings4);
-        const auto find_docs6 = server.FindTopDocuments("the cat help with new bus find not dogs"s, 
-                                                       [](int document_id, DocumentStatus status, int rating) { return rating > 100; });
+        vector<Document> find_docs6;
+        find_docs6 = server.FindTopDocuments("the cat help with new bus find not dogs"s,
+                                            [](int document_id, DocumentStatus status, int rating) { return rating > 100; });
         ASSERT(find_docs6.empty());
-        const auto find_docs7 = server.FindTopDocuments("the cat help with new bus find not dogs"s, 
-                                                       [](int document_id, DocumentStatus status, int rating) { return document_id == 100; });
+        vector<Document> find_docs7;
+        find_docs7 = server.FindTopDocuments("the cat help with new bus find not dogs"s,
+                                            [](int document_id, DocumentStatus status, int rating) { return document_id == 100; });
         ASSERT(find_docs7.empty());
     }
 }
@@ -552,10 +644,15 @@ void TestFindDocumentsByStatus() {
         server.AddDocument(doc_id1, content1, DocumentStatus::BANNED, ratings1);
         server.AddDocument(doc_id2, content2, DocumentStatus::IRRELEVANT, ratings2);
         server.AddDocument(doc_id3, content3, DocumentStatus::REMOVED, ratings3);
-        ASSERT_EQUAL(server.FindTopDocuments("the cat help with new bus find not dogs"s, DocumentStatus::ACTUAL)[0].id, 1);
-        ASSERT_EQUAL(server.FindTopDocuments("the cat help with new bus find not dogs"s, DocumentStatus::BANNED)[0].id, 2);
-        ASSERT_EQUAL(server.FindTopDocuments("the cat help with new bus find not dogs"s, DocumentStatus::IRRELEVANT)[0].id, 3);
-        ASSERT_EQUAL(server.FindTopDocuments("the cat help with new bus find not dogs"s, DocumentStatus::REMOVED)[0].id, 4);
+        vector<Document> result;
+        result = server.FindTopDocuments("the cat help with new bus find not dogs"s, DocumentStatus::ACTUAL);
+        ASSERT_EQUAL(result[0].id, 1);
+        result = server.FindTopDocuments("the cat help with new bus find not dogs"s, DocumentStatus::BANNED);
+        ASSERT_EQUAL(result[0].id, 2);
+        result = server.FindTopDocuments("the cat help with new bus find not dogs"s, DocumentStatus::IRRELEVANT);
+        ASSERT_EQUAL(result[0].id, 3);
+        result = server.FindTopDocuments("the cat help with new bus find not dogs"s, DocumentStatus::REMOVED);
+        ASSERT_EQUAL(result[0].id, 4);
     }
 
     {
@@ -564,8 +661,11 @@ void TestFindDocumentsByStatus() {
         server.AddDocument(doc_id1, content1, DocumentStatus::ACTUAL, ratings1);
         server.AddDocument(doc_id2, content2, DocumentStatus::REMOVED, ratings2);
         server.AddDocument(doc_id3, content3, DocumentStatus::REMOVED, ratings3);
-        ASSERT(server.FindTopDocuments("the cat help with new bus find not dogs"s, DocumentStatus::BANNED).empty());
-        ASSERT(server.FindTopDocuments("the cat help with new bus find not dogs"s, DocumentStatus::IRRELEVANT).empty());
+        vector<Document> result;
+        result = server.FindTopDocuments("the cat help with new bus find not dogs"s, DocumentStatus::BANNED);
+        ASSERT(result.empty());
+        result = server.FindTopDocuments("the cat help with new bus find not dogs"s, DocumentStatus::IRRELEVANT);
+        ASSERT(result.empty());
     }
 }
 
@@ -597,7 +697,8 @@ void TestComputationOfDocumentRelevance() {
         server.AddDocument(doc_id2, content2, DocumentStatus::ACTUAL, ratings2);
         server.AddDocument(doc_id3, content3, DocumentStatus::ACTUAL, ratings3);
         server.AddDocument(doc_id4, content4, DocumentStatus::ACTUAL, ratings4);
-        const auto find_docs = server.FindTopDocuments("the cat help with new bus find not dogs"s);
+        vector<Document> find_docs;
+        find_docs = server.FindTopDocuments("the cat help with new bus find not dogs"s);
         for (const auto& doc : find_docs) {
             ASSERT(abs(doc.relevance - relevance_by_id[doc.id]) < EPSILON);
         }
@@ -616,25 +717,40 @@ void TestSearchServer() {
     RUN_TEST(TestComputationOfDocumentRelevance);
 }
 
+void PrintDocument(const Document& document) {
+    cout << "{ "s
+         << "document_id = "s << document.id << ", "s
+         << "relevance = "s << document.relevance << ", "s
+         << "rating = "s << document.rating << " }"s << endl;
+}
+
 int main() {
     TestSearchServer();
-    cerr << "Search server testing finished"s << endl;
+    cerr << "All tests have been passed"s << endl;
     SearchServer search_server("и в на"s);
-    search_server.AddDocument(0, "белый кот и модный ошейник"s,        DocumentStatus::ACTUAL, {8, -3});
-    search_server.AddDocument(1, "пушистый кот пушистый хвост"s,       DocumentStatus::ACTUAL, {7, 2, 7});
+
+    search_server.AddDocument(0, "белый кот и модный ошейник"s, DocumentStatus::ACTUAL, {8, -3});
+    search_server.AddDocument(1, "пушистый кот пушистый хвост"s, DocumentStatus::ACTUAL, {7, 2, 7});
     search_server.AddDocument(2, "ухоженный пёс выразительные глаза"s, DocumentStatus::ACTUAL, {5, -12, 2, 1});
-    search_server.AddDocument(3, "ухоженный скворец евгений"s,         DocumentStatus::BANNED, {9});
+    search_server.AddDocument(3, "ухоженный скворец евгений"s, DocumentStatus::BANNED, {9});
+
     cout << "ACTUAL by default:"s << endl;
     for (const Document& document : search_server.FindTopDocuments("пушистый ухоженный кот"s)) {
         PrintDocument(document);
     }
+
     cout << "BANNED:"s << endl;
     for (const Document& document : search_server.FindTopDocuments("пушистый ухоженный кот"s, DocumentStatus::BANNED)) {
         PrintDocument(document);
     }
+
     cout << "Even ids:"s << endl;
-    for (const Document& document : search_server.FindTopDocuments("пушистый ухоженный кот"s, [](int document_id, DocumentStatus status, int rating) { return document_id % 2 == 0; })) {
+    for (const Document &document :
+         search_server.FindTopDocuments("пушистый ухоженный кот"s,
+                                        [](int document_id, DocumentStatus status, int rating) {
+                                            return document_id % 2 == 0;
+                                        }))  //
+    {
         PrintDocument(document);
     }
-    return 0;
 }
