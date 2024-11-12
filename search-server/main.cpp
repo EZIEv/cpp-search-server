@@ -73,14 +73,8 @@ struct Document {
 
 class SearchServer {
 public:
-    explicit SearchServer(const string& text) {
-        for (const string& word : SplitIntoWords(text)) {
-            if (!IsWordCorrect(word)) {
-                throw invalid_argument("Stop words are incorrect"s);
-            }
-            stop_words_.insert(word);
-        }
-    }
+    explicit SearchServer(const string& text) 
+        : SearchServer(SplitIntoWords(text)) {}
 
     template <typename StringCollection>
     explicit SearchServer(const StringCollection& word_collection) {
@@ -93,8 +87,11 @@ public:
     }
 
     void AddDocument(int document_id, const string& document, DocumentStatus status, const vector<int>& ratings) {
-        if (document_id < 0 || documents_statuses_.contains(document_id) || !IsValidQuery(document)) {
-            throw invalid_argument("Document ID or document content are incorrect"s);
+        if (document_id < 0) {
+            throw invalid_argument("Document id is less than 0");
+        }
+        if (documents_statuses_.contains(document_id)) {
+            throw invalid_argument("Document with this ID already added");
         }
 
         vector<string> document_words = SplitIntoWordsNoStop(document);
@@ -112,10 +109,6 @@ public:
 
     template <typename PredicateFunc>
     vector<Document> FindTopDocuments(const string& raw_query, PredicateFunc predicate_func) const {
-        if (!IsValidQuery(raw_query)) {
-            throw invalid_argument("Query is incorrect"s);
-        }
-
         const QueryWords query_words = ParseQuery(raw_query);
         vector<Document> result = FindAllDocuments(query_words, predicate_func);
 
@@ -144,10 +137,6 @@ public:
     }
 
     tuple<vector<string>, DocumentStatus> MatchDocument(const string& raw_query, int document_id) const {
-        if (!IsValidQuery(raw_query)) {
-            throw invalid_argument("Query is incorrect"s);
-        }
-
         vector<string> plus_words;
         QueryWords query_words = ParseQuery(raw_query);
         tuple<vector<string>, DocumentStatus> result;
@@ -204,25 +193,6 @@ private:
         return true;
     }
 
-    static bool IsValidQuery(const string& query) {
-        istringstream query_stream(query);
-        
-        string word;
-        while (query_stream >> word) {
-            if (word.size() == 1 && word[0] == '-') {
-                return false;
-            }
-            if (word[0] == '-' && word[1] == '-') {
-                return false;
-            }
-            if (!IsWordCorrect(word)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
     bool IsStopWord(const string& word) const {
         return stop_words_.count(word) > 0;
     }
@@ -230,6 +200,9 @@ private:
     vector<string> SplitIntoWordsNoStop(const string& text) const {
         vector<string> words;
         for (const string& word : SplitIntoWords(text)) {
+            if (!IsWordCorrect(word)) {
+                throw invalid_argument("The word \"" + word + "\" contains forbidden symbol");
+            }
             if (!IsStopWord(word)) {
                 words.push_back(word);
             }
@@ -242,6 +215,12 @@ private:
         QueryWords query_words;
         for (const string& word : SplitIntoWordsNoStop(text)) {
             if (word[0] == '-') {
+                if (word.size() == 1) {
+                    throw invalid_argument("The minus word consists only from minus");
+                }
+                if (word[1] == '-') {
+                    throw invalid_argument("The minus word is misspelled");
+                }
                 query_words.minus_words.insert(word.substr(1));
             }
             else {
