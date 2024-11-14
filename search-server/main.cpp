@@ -88,7 +88,7 @@ public:
 
     void AddDocument(int document_id, const string& document, DocumentStatus status, const vector<int>& ratings) {
         if (document_id < 0) {
-            throw invalid_argument("Document id is less than 0");
+            throw invalid_argument("Document ID is less than 0");
         }
         if (documents_statuses_.contains(document_id)) {
             throw invalid_argument("Document with this ID already added");
@@ -213,6 +213,7 @@ private:
 
     QueryWords ParseQuery(const string& text) const {
         QueryWords query_words;
+        // Проверка слов на спецсимволы происходит в методе SplitIntoWordsNoStop, который вызывается внутри следующего цикла
         for (const string& word : SplitIntoWordsNoStop(text)) {
             if (word[0] == '-') {
                 if (word.size() == 1) {
